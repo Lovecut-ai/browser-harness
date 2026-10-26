@@ -361,9 +361,15 @@ def _is_agent_startup_placeholder(title, url):
     )
 
 
+def _context_targets():
+    """Lovecut fork: the targets of BU_BROWSER_CONTEXT_ID, or every target when it is unset"""
+    ctx = os.environ.get("BU_BROWSER_CONTEXT_ID")
+    return [t for t in cdp("Target.getTargets")["targetInfos"] if not ctx or t.get("browserContextId") == ctx]
+
+
 def list_tabs(include_chrome=True):
     out = []
-    for t in cdp("Target.getTargets")["targetInfos"]:
+    for t in _context_targets():
         if t["type"] != "page": continue
         url = t.get("url", "")
         if _is_agent_startup_placeholder(t.get("title", ""), url): continue
@@ -444,7 +450,8 @@ def new_tab(url="about:blank"):
                 return cur.get("targetId") or cur.get("target_id")
         except Exception:
             pass
-    tid = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+    ctx = os.environ.get("BU_BROWSER_CONTEXT_ID")
+    tid = cdp("Target.createTarget", url="about:blank", background=True, **({"browserContextId": ctx} if ctx else {}))["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
@@ -475,7 +482,7 @@ def ensure_real_tab():
 
 def iframe_target(url_substr):
     """First iframe target whose URL contains `url_substr`. Use with js(..., target_id=...)."""
-    for t in cdp("Target.getTargets")["targetInfos"]:
+    for t in _context_targets():
         if t["type"] == "iframe" and url_substr in t.get("url", ""):
             return t["targetId"]
     return None
