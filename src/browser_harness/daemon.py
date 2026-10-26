@@ -87,6 +87,8 @@ PROFILES = profile_dirs()
 INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 BU_API = "https://api.browser-use.com/api/v3"
 REMOTE_ID = os.environ.get("BU_BROWSER_ID")
+# Lovecut fork: one CDP browser context per daemon, so daemons sharing one Chrome see only their own tabs
+CONTEXT_ID = os.environ.get("BU_BROWSER_CONTEXT_ID") or None
 BROWSER_KIND = "cloud" if REMOTE_ID else ("cdp" if (os.environ.get("BU_CDP_WS") or os.environ.get("BU_CDP_URL")) else "local")
 # Chrome 144+ shows a per-connection popup. Keep popup open enough to click.
 LOCAL_HANDSHAKE_TIMEOUT = 45
@@ -306,6 +308,15 @@ def stop_remote():
         log(f"stop_remote failed ({REMOTE_ID}): {e}")
 
 
+def in_context(targets):
+    """The targets of CONTEXT_ID, or all of them when no context is set"""
+    return [t for t in targets if CONTEXT_ID is None or t.get("browserContextId") == CONTEXT_ID]
+
+
+def blank_target_params():
+    return {"url": "about:blank", "background": True, **({"browserContextId": CONTEXT_ID} if CONTEXT_ID else {})}
+
+
 def is_real_page(t):
     return t["type"] == "page" and not t.get("url", "").startswith(INTERNAL)
 
@@ -370,7 +381,7 @@ class Daemon:
 
     async def attach_first_page(self, replaces_session=None, enable_domains=True):
         """Attach to a real page (or any page). Sets self.session. Returns attached target or None."""
-        targets = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+        targets = in_context((await self.cdp.send_raw("Target.getTargets"))["targetInfos"])
         # Named daemons (BU_NAME != "default") share one browser with other
         # daemons — attaching to the first page makes parallel daemons fight
         # over a single tab (navigations clobber each other). Give each named
@@ -389,12 +400,12 @@ class Daemon:
                 # Two stale IPC requests can recover concurrently. Recheck
                 # inside a narrow lock so they share one replacement tab.
                 async with self._dedicated_target_lock:
-                    refreshed = (await self.cdp.send_raw("Target.getTargets"))["targetInfos"]
+                    refreshed = in_context((await self.cdp.send_raw("Target.getTargets"))["targetInfos"])
                     pages_by_id = {t["targetId"]: t for t in refreshed if t["type"] == "page"}
                     page = pages_by_id.get(self.target_id) or pages_by_id.get(self.dedicated_target_id)
                     if page is None:
                         tid = (await self.cdp.send_raw(
-                            "Target.createTarget", {"url": "about:blank", "background": True}
+                            "Target.createTarget", blank_target_params()
                         ))["targetId"]
                         self.dedicated_target_id = tid
                         log(f"named daemon {NAME}: created dedicated tab ({tid})")
@@ -429,7 +440,7 @@ class Daemon:
         if not pages:
             # No usable pages - create one instead of attaching to omnibox popup.
             tid = (await self.cdp.send_raw(
-                "Target.createTarget", {"url": "about:blank", "background": True}
+                "Target.createTarget", blank_target_params()
             ))["targetId"]
             log(f"no real pages found, created about:blank ({tid})")
             pages = [{"targetId": tid, "url": "about:blank", "type": "page"}]
